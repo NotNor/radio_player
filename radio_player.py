@@ -3,9 +3,9 @@
 import re
 import time
 import evdev
-import vlc
 import threading
 import queue
+import mpv
 import os
 from MY_TINY_FONT import TINY_FONT
 
@@ -69,11 +69,11 @@ class DeviceController:
              [0, 0, 0, B, 0, 0, B, 0, 0, B, B, 0, 0, 0, 0, 0],
              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]],
             "https://stream9.nadaje.com:8003/live")
-        self.stations = [self.R357, self.RNS, self.ROCKSERWIS]
+        self.stations = [self.ROCKSERWIS, self.R357, self.RNS]
 
         self.stations_iterator = iter(self.stations)
 
-        self.media_player = Player(self.R357)
+        self.media_player = Player(next(self.stations_iterator))
 
         self.led_cmds = queue.Queue()
         self.led_matrix = threading.Thread(target=LCD, args=(self.led_cmds, self.media_player))
@@ -84,6 +84,7 @@ class DeviceController:
         if cmd == "STOP":
             self.media_player.stop()
         else:
+
             if cmd == "PLAY":
                 self.media_player.play()
 
@@ -100,6 +101,7 @@ class DeviceController:
                     self.stations_iterator = iter(self.stations)
                     self.media_player.play(next(self.stations_iterator))
 
+
             self.led_cmds.put(self.media_player.station)
 
 
@@ -108,34 +110,37 @@ def player_countdown(vlc_p):
 
 
 class Player:
-    player = vlc.Instance("-I dummy --no-video --aout=alsa")
-    media_player = player.media_player_new()
+    media_player = mpv.MPV()
 
-    t = threading.Timer(timeout, player_countdown, media_player)
+#    t = threading.Timer(timeout, player_countdown, media_player)
 
     def __init__(self, station):
         self.station = station
 
     def play(self, station=None):
         if station is not None and self.station != station:
-            self.set_station(station)
-            self.media_player.play()
-        elif not self.media_player.is_playing():
-            self.media_player.play()
+            self.media_player.play(station.link)
+            self.station = station
+        elif not self.is_playing():
+            self.media_player.play(self.station.link)
 
-        self.t.cancel()
-        self.t = threading.Timer(timeout, player_countdown, args=(self.media_player,))
-        self.t.start()
+        self.media_player._set_property("force-seekable", True)
+
+#        self.t.cancel()
+#        self.t = threading.Timer(timeout, player_countdown, args=(self.media_player,))
+#        self.t.start()
 
     def set_station(self, station):
-        self.media_player.set_media(self.player.media_new(station.link))
         self.station = station
 
     def stop(self):
         self.media_player.stop()
 
     def is_playing(self):
-        return self.media_player.is_playing()
+        return not self.media_player.core_idle
+
+    def pause(self):
+        self.media_player._set_property("pause", True)
 
 
 def LCD(station, media_player):
