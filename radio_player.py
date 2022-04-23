@@ -1,14 +1,14 @@
- #!/usr/bin/env python
-
-import re
+# !/usr/bin/env python
 import time
-import evdev
 import threading
+import itertools
 import queue
+from enum import Enum
 import mpv
-import os
-from MY_TINY_FONT import TINY_FONT
 
+from math import floor
+
+from MY_TINY_FONT import TINY_FONT
 from luma.led_matrix.device import max7219
 from luma.core.interface.serial import spi, noop
 from luma.core.render import canvas
@@ -16,195 +16,215 @@ from luma.core.virtual import viewport
 from luma.core.legacy import text, show_message
 from luma.core.legacy.font import proportional, CP437_FONT, SINCLAIR_FONT, LCD_FONT
 
+from radio_stations_config import stations, SEEK_1, SEEK_2, SEEK_3
+
 global timeout
 timeout = 25200
 
 
+class Action(Enum):
+    STOP = 1
+    PLAY = 2
+    TOGGLE_PAUSE = 3
+    NEXT = 4
+    SEEK_B = 5
+    SEEK_F = 6
+    SHOW = 7
+    LIVE = 8
+
+
 class Station:
-    def __init__(self, name, logo, link):
+    def __init__(self, name, link, logo=None):
         self.name = name
-        self.logo = logo
         self.link = link
+        self.logo = logo
 
 
 class DeviceController:
-    global B
-
-    B = 1
-
     def __init__(self):
-
-        self.R357 = Station(
-            "Radio 357",
-            [[0, B, B, B, B, 0, B, B, B, B, 0, B, B, B, B, 0],
-             [0, 0, 0, 0, B, 0, B, 0, 0, 0, 0, 0, 0, 0, B, 0],
-             [0, 0, 0, 0, B, 0, B, 0, 0, 0, 0, 0, 0, 0, B, 0],
-             [0, B, B, B, B, 0, B, B, B, B, 0, 0, 0, 0, B, 0],
-             [0, 0, 0, 0, B, 0, 0, 0, 0, B, 0, 0, 0, 0, B, 0],
-             [0, 0, 0, 0, B, 0, 0, 0, 0, B, 0, 0, 0, 0, B, 0],
-             [0, B, B, B, B, 0, B, B, B, B, 0, 0, 0, 0, B, 0],
-             [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]],
-            "https://stream.rcs.revma.com/an1ugyygzk8uv")
-
-        self.RNS = Station(
-            "Radio Nowy Swiat",
-            [[0, B, B, B, 0, 0, B, 0, 0, B, 0, 0, B, B, 0, 0],
-             [0, B, 0, 0, B, 0, B, 0, 0, B, 0, 0, 0, 0, 0, 0],
-             [0, B, 0, 0, B, 0, B, 0, 0, B, 0, B, B, B, B, 0],
-             [0, B, B, B, 0, 0, B, B, 0, B, 0, B, 0, 0, 0, 0],
-             [0, B, 0, 0, B, 0, B, 0, B, B, 0, B, B, B, B, 0],
-             [0, B, 0, 0, B, 0, B, 0, 0, B, 0, 0, 0, 0, B, 0],
-             [0, B, 0, 0, B, 0, B, 0, 0, B, 0, B, B, B, B, 0],
-             [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]],
-            "https://stream.rcs.revma.com/ypqt40u0x1zuv")
-
-        self.ROCKSERWIS = Station(
-            "RockSerwis.fm",
-            [[0, 0, 0, B, B, B, 0, 0, 0, B, B, 0, 0, 0, 0, 0],
-             [0, 0, 0, B, 0, 0, B, 0, B, 0, 0, B, 0, 0, 0, 0],
-             [0, 0, 0, B, 0, 0, B, 0, B, 0, 0, 0, 0, 0, 0, 0],
-             [0, 0, 0, B, B, B, 0, 0, 0, B, B, 0, 0, 0, 0, 0],
-             [0, 0, 0, B, 0, 0, B, 0, 0, 0, 0, B, 0, 0, 0, 0],
-             [0, 0, 0, B, 0, 0, B, 0, B, 0, 0, B, 0, 0, 0, 0],
-             [0, 0, 0, B, 0, 0, B, 0, 0, B, B, 0, 0, 0, 0, 0],
-             [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]],
-            "https://stream9.nadaje.com:8003/live")
-        self.stations = [self.ROCKSERWIS, self.R357, self.RNS]
-
-        self.stations_iterator = iter(self.stations)
-
-        self.media_player = Player(next(self.stations_iterator))
-
-        self.led_cmds = queue.Queue()
-        self.led_matrix = threading.Thread(target=LCD, args=(self.led_cmds, self.media_player))
+        self.streams_iterator = itertools.cycle(
+            [StreamPlayer(Station(station[0], station[1], station[2])) for station in stations])
+        self.current_stream = next(self.streams_iterator)
+        self.event = threading.Event()
+        self.led_matrix = threading.Thread(target=lcd_controller, args=(self.event, self))
         self.led_matrix.start()
 
     def execute(self, cmd):
-
-        if cmd == "STOP":
-            self.media_player.stop()
+        if cmd == Action.STOP:
+            self.current_stream.mute()
+            self.current_stream.reset_pos()
         else:
+            if cmd == Action.PLAY:
+                self.current_stream.unmute()
+                self.event.set()
 
-            if cmd == "PLAY":
-                self.media_player.play()
+            if cmd == Action.TOGGLE_PAUSE:
+                if self.current_stream.is_paused():
+                    self.current_stream.unpause()
+                else:
+                    self.current_stream.pause()
 
-            if cmd == "RNS":
-                self.media_player.play(self.RNS)
+            if cmd == Action.NEXT:
+                self.current_stream.mute()
+                self.current_stream.reset_pos()
+                self.current_stream.unpause()
+                self.current_stream = next(self.streams_iterator)
+                self.current_stream.unmute()
+                self.event.set()
 
-            if cmd == "357":
-                self.media_player.play(self.R357)
+            if cmd == Action.SEEK_B:
+                self.current_stream.seek(-30)
 
-            if cmd == "NEXT":
-                try:
-                    self.media_player.play(next(self.stations_iterator))
-                except:
-                    self.stations_iterator = iter(self.stations)
-                    self.media_player.play(next(self.stations_iterator))
+            if cmd == Action.SEEK_F:
+                self.current_stream.seek(30)
 
+            if cmd == Action.SHOW:
+                self.current_stream.unmute()
+                self.event.set()
 
-            self.led_cmds.put(self.media_player.station)
-
-
-def player_countdown(vlc_p):
-    vlc_p.stop()
+            if cmd == Action.LIVE:
+                self.current_stream.reset_pos()
+                self.current_stream.unpause()
 
 
-class Player:
-    media_player = mpv.MPV()
-
-#    t = threading.Timer(timeout, player_countdown, media_player)
-
+class StreamPlayer:
     def __init__(self, station):
         self.station = station
+        self.stream_player = mpv.MPV(log_handler=print, loglevel='debug')
+        self.stream_player._set_property("ao", "pulse")
+        self.stream_player.play(station.link)
+        self.mute()
+        self.stream_player._set_property("force-seekable", True)
+        time.sleep(3)
+        self.reset_pos()
 
-    def play(self, station=None):
-        if station is not None and self.station != station:
-            self.media_player.play(station.link)
-            self.station = station
-        elif not self.is_playing():
-            self.media_player.play(self.station.link)
+    def unmute(self):
+        self.stream_player._set_property("volume", 100)
 
-        self.media_player._set_property("force-seekable", True)
+    def mute(self):
+        self.stream_player._set_property("volume", 0)
 
-#        self.t.cancel()
-#        self.t = threading.Timer(timeout, player_countdown, args=(self.media_player,))
-#        self.t.start()
+    def is_muted(self):
+        return self.stream_player._get_property("volume") == 0
 
-    def set_station(self, station):
-        self.station = station
-
-    def stop(self):
-        self.media_player.stop()
+    def is_paused(self):
+        return self.stream_player.core_idle
 
     def is_playing(self):
-        return not self.media_player.core_idle
+        return len(self.stream_player.playlist_filenames) == 1
 
     def pause(self):
-        self.media_player._set_property("pause", True)
+        self.stream_player._set_property("pause", True)
+
+    def unpause(self):
+        self.stream_player._set_property("pause", False)
+
+    def seek(self, seconds):
+        seek_timestamp = self.stream_playback_pos() + seconds
+        if 0 < seek_timestamp < self.stream_end_timestamp():
+            self.stream_player.seek(seconds)
+            return seconds
+        elif seek_timestamp < 0:
+            self.stream_player.seek(0, reference="absolute")
+        else:
+            self.reset_pos()
+        return 0
+
+    def reset_pos(self):
+        self.stream_player.seek(self.stream_end_timestamp(), reference="absolute")
+
+    def stream_end_timestamp(self):
+        return floor(self.stream_player.demuxer_cache_state.get('cache-end') - 5)
+
+    def stream_playback_pos(self):
+        return floor(self.stream_player._get_property("playback-time"))
+
+    def stream_lag_seconds(self):
+        return int(floor(self.stream_end_timestamp() - self.stream_playback_pos()))
+
+    def stream_lag_string(self):
+        lag = self.stream_lag_seconds()
+        hours = lag // 3600
+        minutes = lag % 3600 // 60
+        seconds = lag % 3600 % 60
+
+        if hours > 0:
+            return f'-{hours:02}:{minutes:02}:{seconds:02}'
+        elif minutes > 0:
+            return f'-{minutes:02}:{seconds:02}'
+        else:
+            return f'-{seconds:02}'
 
 
-def LCD(station, media_player):
-    serial = spi(port=0, device=0, gpio=noop())
+def lcd_controller(e, dv):
+    lcd = LCD()
 
-    device = max7219(serial, 16, 8, None, 2, -90, False)
-    device.contrast(192)
-
-    CL = [[B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, B],
-          [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-          [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-          [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-          [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-          [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-          [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-          [B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, B]]
-
-    timer = 0
-    countdown = 600
-    step = 0.3
     while True:
+        if e.is_set():
+            e.clear()
+            lcd.high_brightness()
+            lcd.print_bitmap(dv.current_stream.station.logo)
+            lcd.dim(e)
+        elif dv.current_stream.is_paused() or dv.current_stream.stream_lag_seconds() > 3:
+            lcd.print(dv.current_stream.stream_lag_string())
+        elif dv.current_stream.is_muted():
+            lcd.blank()
+        else:
+            lcd.low_brightness()
+            lcd.active()
 
-        if not station.empty():
-            device.contrast(128)
-            logo = station.get()
-            if logo.logo != None:
-                printBitmap(logo.logo, device)
+        time.sleep(0.3)
+
+
+class LCD():
+
+    def __init__(self):
+        self.serial = spi(port=0, device=0, gpio=noop())
+        self.device = max7219(self.serial, 16, 8, None, 2, -90, False)
+        self.device.contrast(128)
+
+    B = 1
+    _ = 0
+
+    CL = [[B,_,_,_,_,_,_,_,_,_,_,_,_,_,_,B],
+          [_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_],
+          [_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_],
+          [_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_],
+          [_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_],
+          [_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_],
+          [_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_],
+          [B,_,_,_,_,_,_,_,_,_,_,_,_,_,_,B]]
+
+    def active(self):
+        self.print_bitmap(self.CL)
+
+    def blank(self):
+        self.device.clear()
+
+    def dim(self, e):
+        time.sleep(1)
+        for br_lvl in range(128, -1, -16):
+            self.device.contrast(br_lvl)
+            if not e.is_set():
+                time.sleep(0.05)
             else:
-                show_message(device, logo.name, fill="white", font=proportional(SINCLAIR_FONT))
-            timer = time.time()
+                break
 
-        if time.time() - timer < 4 and time.time() - timer > 3:
-            dim(device)
-            time.sleep(1)
+    def print_bitmap(self, logo):
+        with canvas(self.device) as draw:
+            for x in range(16):
+                for y in range(8):
+                    if logo[y][x] == 1:
+                        draw.point((x, y), fill="white")
 
-        playtime = time.time() - timer
+    def high_brightness(self):
+        self.device.contrast(128)
 
-        if playtime > 4:
-            if media_player.is_playing():
-                if playtime < timeout - countdown:
-                    device.contrast(0)
-                    printBitmap(CL, device)
-                    step = 0.5
-                else:
-                    device.contrast(255)
-                    with canvas(device) as draw:
-                        text(draw, (0, 0), str(-round(playtime) + timeout), fill="white", font=proportional(TINY_FONT))
-                    step = 0.05
-            else:
-                device.clear()
-                step = 1
+    def print(self, stream_lag_string):
+        self.high_brightness()
+        show_message(self.device, str(stream_lag_string), fill="white", font=proportional(SINCLAIR_FONT))
 
-        time.sleep(step)
-
-
-def dim(device):
-    for br_lvl in range(128, -1, -16):
-        device.contrast(br_lvl)
-        time.sleep(0.05)
-
-
-def printBitmap(T, device):
-    with canvas(device) as draw:
-        for x in range(16):
-            for y in range(8):
-                if T[y][x] == 1:
-                    draw.point((x, y), fill="white")
+    def low_brightness(self):
+        self.device.contrast(0)
+#        with canvas(self.device) as draw:
+#            text(draw, (0, 0), str(stream_lag_string), fill="white", font=proportional(TINY_FONT))
