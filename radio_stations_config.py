@@ -1,10 +1,6 @@
 X = 1
 _ = 0
 
-SEEK_1 = 15
-SEEK_2 = 60
-SEEK_3 = 300
-
 R357 = (
     "Radio 357",
     "https://stream.rcs.revma.com/an1ugyygzk8uv",
@@ -41,4 +37,4 @@ ROCKSERWIS = (
      [_,_,_,X,_,_,X,_,_,X,X,_,_,_,_,_],
      [_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_]])
 
-stations = (ROCKSERWIS, R357, RNS)
+radio_stations = (ROCKSERWIS, R357, RNS)

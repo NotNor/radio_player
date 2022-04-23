@@ -2,7 +2,6 @@
 import time
 import threading
 import itertools
-import queue
 from enum import Enum
 import mpv
 
@@ -16,7 +15,7 @@ from luma.core.virtual import viewport
 from luma.core.legacy import text, show_message
 from luma.core.legacy.font import proportional, CP437_FONT, SINCLAIR_FONT, LCD_FONT
 
-from radio_stations_config import stations, SEEK_1, SEEK_2, SEEK_3
+from radio_stations_config import radio_stations
 
 global timeout
 timeout = 25200
@@ -33,7 +32,7 @@ class Action(Enum):
     LIVE = 8
 
 
-class Station:
+class RadioStation:
     def __init__(self, name, link, logo=None):
         self.name = name
         self.link = link
@@ -43,7 +42,7 @@ class Station:
 class DeviceController:
     def __init__(self):
         self.streams_iterator = itertools.cycle(
-            [StreamPlayer(Station(station[0], station[1], station[2])) for station in stations])
+            [StreamPlayer(RadioStation(radio_station[0], radio_station[1], radio_station[2])) for radio_station in radio_stations])
         self.current_stream = next(self.streams_iterator)
         self.event = threading.Event()
         self.led_matrix = threading.Thread(target=lcd_controller, args=(self.event, self))
@@ -90,7 +89,7 @@ class DeviceController:
 class StreamPlayer:
     def __init__(self, station):
         self.station = station
-        self.stream_player = mpv.MPV(log_handler=print, loglevel='debug')
+        self.stream_player = mpv.MPV()
         self.stream_player._set_property("ao", "pulse")
         self.stream_player.play(station.link)
         self.mute()
@@ -156,56 +155,56 @@ class StreamPlayer:
             return f'-{seconds:02}'
 
 
-def lcd_controller(e, dv):
-    lcd = LCD()
+def lcd_controller(event, device_controller):
+    led = LED()
 
     while True:
-        if e.is_set():
-            e.clear()
-            lcd.high_brightness()
-            lcd.print_bitmap(dv.current_stream.station.logo)
-            lcd.dim(e)
-        elif dv.current_stream.is_paused() or dv.current_stream.stream_lag_seconds() > 3:
-            lcd.print(dv.current_stream.stream_lag_string())
-        elif dv.current_stream.is_muted():
-            lcd.blank()
+        if event.is_set():
+            event.clear()
+            led.brightness_high()
+            led.print_bitmap(device_controller.current_stream.station.logo)
+            led.dim(event)
+        elif device_controller.current_stream.is_paused() or device_controller.current_stream.stream_lag_seconds() > 3:
+            led.print(device_controller.current_stream.stream_lag_string())
+        elif device_controller.current_stream.is_muted():
+            led.blank()
         else:
-            lcd.low_brightness()
-            lcd.active()
+            led.brightness_low()
+            led.active()
 
         time.sleep(0.3)
 
 
-class LCD():
+class LED():
 
     def __init__(self):
         self.serial = spi(port=0, device=0, gpio=noop())
         self.device = max7219(self.serial, 16, 8, None, 2, -90, False)
         self.device.contrast(128)
 
-    B = 1
+    X = 1
     _ = 0
 
-    CL = [[B,_,_,_,_,_,_,_,_,_,_,_,_,_,_,B],
-          [_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_],
-          [_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_],
-          [_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_],
-          [_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_],
-          [_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_],
-          [_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_],
-          [B,_,_,_,_,_,_,_,_,_,_,_,_,_,_,B]]
+    PLAYING =  [[X,_,_,_,_,_,_,_,_,_,_,_,_,_,_,X],
+                [_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_],
+                [_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_],
+                [_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_],
+                [_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_],
+                [_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_],
+                [_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_],
+                [X,_,_,_,_,_,_,_,_,_,_,_,_,_,_,X]]
 
     def active(self):
-        self.print_bitmap(self.CL)
+        self.print_bitmap(self.PLAYING)
 
     def blank(self):
         self.device.clear()
 
-    def dim(self, e):
-        time.sleep(1)
+    def dim(self, event):
+        time.sleep(1.5)
         for br_lvl in range(128, -1, -16):
             self.device.contrast(br_lvl)
-            if not e.is_set():
+            if not event.is_set():
                 time.sleep(0.05)
             else:
                 break
@@ -217,14 +216,12 @@ class LCD():
                     if logo[y][x] == 1:
                         draw.point((x, y), fill="white")
 
-    def high_brightness(self):
+    def brightness_high(self):
         self.device.contrast(128)
 
-    def print(self, stream_lag_string):
-        self.high_brightness()
-        show_message(self.device, str(stream_lag_string), fill="white", font=proportional(SINCLAIR_FONT))
-
-    def low_brightness(self):
+    def brightness_low(self):
         self.device.contrast(0)
-#        with canvas(self.device) as draw:
-#            text(draw, (0, 0), str(stream_lag_string), fill="white", font=proportional(TINY_FONT))
+
+    def print(self, stream_lag_string):
+        self.brightness_high()
+        show_message(self.device, str(stream_lag_string), fill="white", font=proportional(TINY_FONT))
