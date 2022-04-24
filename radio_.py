@@ -1,17 +1,14 @@
 # !/usr/bin/env python
-import threading
 import time
 import evdev
-import queue
-
-from radio_player import Action, DeviceController
+from radio_player import Action, RadioController
 
 
 def main():
     remote = evdev.InputDevice('/dev/input/event0')
     remote.grab()
     
-    player = DeviceController()
+    player = RadioController()
     timee = time.time()
 
     while True:

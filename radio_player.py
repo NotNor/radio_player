@@ -4,7 +4,6 @@ import threading
 import itertools
 from enum import Enum
 import mpv
-
 from math import floor
 
 from MY_TINY_FONT import TINY_FONT
@@ -16,9 +15,6 @@ from luma.core.legacy import text, show_message
 from luma.core.legacy.font import proportional, CP437_FONT, SINCLAIR_FONT, LCD_FONT
 
 from radio_stations_config import radio_stations
-
-global timeout
-timeout = 25200
 
 
 class Action(Enum):
@@ -39,51 +35,44 @@ class RadioStation:
         self.logo = logo
 
 
-class DeviceController:
+class RadioController:
     def __init__(self):
         self.streams_iterator = itertools.cycle(
             [StreamPlayer(RadioStation(radio_station[0], radio_station[1], radio_station[2])) for radio_station in radio_stations])
         self.current_stream = next(self.streams_iterator)
-        self.event = threading.Event()
-        self.led_matrix = threading.Thread(target=lcd_controller, args=(self.event, self))
-        self.led_matrix.start()
+        self.show_logo = threading.Event()
+        self.display = threading.Thread(target=display_control, args=(self.show_logo, self))
+        self.display.start()
 
     def execute(self, cmd):
         if cmd == Action.STOP:
             self.current_stream.mute()
             self.current_stream.reset_pos()
-        else:
-            if cmd == Action.PLAY:
-                self.current_stream.unmute()
-                self.event.set()
-
-            if cmd == Action.TOGGLE_PAUSE:
-                if self.current_stream.is_paused():
-                    self.current_stream.unpause()
-                else:
-                    self.current_stream.pause()
-
-            if cmd == Action.NEXT:
-                self.current_stream.mute()
-                self.current_stream.reset_pos()
+        elif cmd == Action.PLAY:
+            self.current_stream.unmute()
+            self.show_logo.set()
+        elif cmd == Action.TOGGLE_PAUSE:
+            if self.current_stream.is_paused():
                 self.current_stream.unpause()
-                self.current_stream = next(self.streams_iterator)
-                self.current_stream.unmute()
-                self.event.set()
-
-            if cmd == Action.SEEK_B:
-                self.current_stream.seek(-30)
-
-            if cmd == Action.SEEK_F:
-                self.current_stream.seek(30)
-
-            if cmd == Action.SHOW:
-                self.current_stream.unmute()
-                self.event.set()
-
-            if cmd == Action.LIVE:
-                self.current_stream.reset_pos()
-                self.current_stream.unpause()
+            else:
+                self.current_stream.pause()
+        elif cmd == Action.NEXT:
+            self.current_stream.mute()
+            self.current_stream.reset_pos()
+            self.current_stream.unpause()
+            self.current_stream = next(self.streams_iterator)
+            self.current_stream.unmute()
+            self.show_logo.set()
+        elif cmd == Action.SEEK_B:
+            self.current_stream.seek(-30)
+        elif cmd == Action.SEEK_F:
+            self.current_stream.seek(30)
+        elif cmd == Action.SHOW:
+            self.current_stream.unmute()
+            self.show_logo.set()
+        elif cmd == Action.LIVE:
+            self.current_stream.reset_pos()
+            self.current_stream.unpause()
 
 
 class StreamPlayer:
@@ -122,12 +111,10 @@ class StreamPlayer:
         seek_timestamp = self.stream_playback_pos() + seconds
         if 0 < seek_timestamp < self.stream_end_timestamp():
             self.stream_player.seek(seconds)
-            return seconds
         elif seek_timestamp < 0:
             self.stream_player.seek(0, reference="absolute")
         else:
             self.reset_pos()
-        return 0
 
     def reset_pos(self):
         self.stream_player.seek(self.stream_end_timestamp(), reference="absolute")
@@ -148,35 +135,45 @@ class StreamPlayer:
         seconds = lag % 3600 % 60
 
         if hours > 0:
-            return f'-{hours:02}:{minutes:02}:{seconds:02}'
+            return f'-{hours}:{minutes:02}:{seconds:02}'
         elif minutes > 0:
-            return f'-{minutes:02}:{seconds:02}'
+            return f'-{minutes}:{seconds:02}'
         else:
             return f'-{seconds:02}'
 
 
-def lcd_controller(event, device_controller):
-    led = LED()
+def display_control(event, device_controller):
+    display = LED_display()
+    lag = 0
+    lag_string = ""
 
     while True:
         if event.is_set():
             event.clear()
-            led.brightness_high()
-            led.print_bitmap(device_controller.current_stream.station.logo)
-            led.dim(event)
-        elif device_controller.current_stream.is_paused() or device_controller.current_stream.stream_lag_seconds() > 3:
-            led.print(device_controller.current_stream.stream_lag_string())
+            display.brightness_high()
+            display.print_bitmap(device_controller.current_stream.station.logo)
+            display.dim(event)
+        elif device_controller.current_stream.is_paused():
+            display.print(device_controller.current_stream.stream_lag_string())
+        elif device_controller.current_stream.stream_lag_seconds() > 3:
+            current_lag = device_controller.current_stream.stream_lag_seconds()
+            if abs(current_lag - lag) > 1:
+                current_lag_string = device_controller.current_stream.stream_lag_string()
+                display.print(current_lag_string)
+                lag = current_lag
+                lag_string = current_lag_string
+            else:
+                display.print(lag_string)
         elif device_controller.current_stream.is_muted():
-            led.blank()
+            display.blank()
         else:
-            led.brightness_low()
-            led.active()
+            display.brightness_low()
+            display.screensaver()
 
-        time.sleep(0.3)
+        time.sleep(0.1)
 
 
-class LED():
-
+class LED_display:
     def __init__(self):
         self.serial = spi(port=0, device=0, gpio=noop())
         self.device = max7219(self.serial, 16, 8, None, 2, -90, False)
@@ -194,14 +191,14 @@ class LED():
                 [_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_],
                 [X,_,_,_,_,_,_,_,_,_,_,_,_,_,_,X]]
 
-    def active(self):
+    def screensaver(self):
         self.print_bitmap(self.PLAYING)
 
     def blank(self):
         self.device.clear()
 
     def dim(self, event):
-        time.sleep(1.5)
+        event.wait(2.5)
         for br_lvl in range(128, -1, -16):
             self.device.contrast(br_lvl)
             if not event.is_set():
@@ -223,5 +220,9 @@ class LED():
         self.device.contrast(0)
 
     def print(self, stream_lag_string):
-        self.brightness_high()
-        show_message(self.device, str(stream_lag_string), fill="white", font=proportional(TINY_FONT))
+        self.device.contrast(64)
+        if len(stream_lag_string) > 5:
+            show_message(self.device, str(stream_lag_string), fill="white", font=proportional(TINY_FONT))
+        else:
+            with canvas(self.device) as draw:
+                text(draw, (-1, 1), stream_lag_string, fill="white", font=proportional(TINY_FONT))
