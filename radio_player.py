@@ -107,8 +107,6 @@ class StreamPlayer:
         return self.stream_player.core_idle
 
     def is_playing(self):
-        #return len(self.stream_player.playlist_filenames) == 1
-        print(self.stream_player._get_property("idle-active"))
         return self.stream_player._get_property("idle-active") != "true"
 
     def pause(self):
@@ -208,7 +206,7 @@ class LED_display:
         for br_lvl in range(128, -1, -16):
             self.device.contrast(br_lvl)
             if not event.is_set():
-                time.sleep(0.05)
+                time.sleep(0.08)
             else:
                 break
 
