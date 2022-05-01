@@ -10,9 +10,8 @@ from MY_TINY_FONT import TINY_FONT
 from luma.led_matrix.device import max7219
 from luma.core.interface.serial import spi, noop
 from luma.core.render import canvas
-from luma.core.virtual import viewport
 from luma.core.legacy import text, show_message
-from luma.core.legacy.font import proportional, CP437_FONT, SINCLAIR_FONT, LCD_FONT
+from luma.core.legacy.font import proportional
 
 from radio_stations_config import radio_stations
 
@@ -41,38 +40,47 @@ class RadioController:
             [StreamPlayer(RadioStation(radio_station[0], radio_station[1], radio_station[2])) for radio_station in radio_stations])
         self.current_stream = next(self.streams_iterator)
         self.show_logo = threading.Event()
-        self.display = threading.Thread(target=display_control, args=(self.show_logo, self))
+        self.show_lag = threading.Event()
+        self.display = threading.Thread(target=display_control, args=(self.show_logo, self.show_lag, self))
         self.display.start()
 
     def execute(self, cmd):
-        if cmd == Action.STOP:
-            self.current_stream.mute()
-            self.current_stream.reset_pos()
-        elif cmd == Action.PLAY:
-            self.current_stream.unmute()
-            self.show_logo.set()
-        elif cmd == Action.TOGGLE_PAUSE:
-            if self.current_stream.is_paused():
+        try:
+            if cmd == Action.STOP:
+                self.current_stream.mute()
+                self.current_stream.reset_pos()
+            elif cmd == Action.PLAY:
+                self.current_stream.unmute()
+                self.show_logo.set()
+            elif cmd == Action.TOGGLE_PAUSE:
+                if self.current_stream.is_paused():
+                    self.current_stream.unpause()
+                else:
+                    self.current_stream.pause()
+            elif cmd == Action.NEXT:
+                self.current_stream.mute()
+                self.current_stream.reset_pos()
                 self.current_stream.unpause()
-            else:
-                self.current_stream.pause()
-        elif cmd == Action.NEXT:
-            self.current_stream.mute()
-            self.current_stream.reset_pos()
-            self.current_stream.unpause()
+                self.current_stream = next(self.streams_iterator)
+                self.current_stream.unmute()
+                self.show_logo.set()
+            elif cmd == Action.SEEK_B:
+                self.show_lag.set()
+                self.current_stream.seek(-30)
+            elif cmd == Action.SEEK_F:
+                self.show_lag.set()
+                self.current_stream.seek(30)
+            elif cmd == Action.SHOW:
+                self.current_stream.unmute()
+                self.show_logo.set()
+            elif cmd == Action.LIVE:
+                self.current_stream.reset_pos()
+                self.current_stream.unpause()
+        except Exception as e:
+            print(e)
+            self.streams_iterator = itertools.cycle(
+            [StreamPlayer(RadioStation(radio_station[0], radio_station[1], radio_station[2])) for radio_station in radio_stations])
             self.current_stream = next(self.streams_iterator)
-            self.current_stream.unmute()
-            self.show_logo.set()
-        elif cmd == Action.SEEK_B:
-            self.current_stream.seek(-30)
-        elif cmd == Action.SEEK_F:
-            self.current_stream.seek(30)
-        elif cmd == Action.SHOW:
-            self.current_stream.unmute()
-            self.show_logo.set()
-        elif cmd == Action.LIVE:
-            self.current_stream.reset_pos()
-            self.current_stream.unpause()
 
 
 class StreamPlayer:
@@ -83,7 +91,7 @@ class StreamPlayer:
         self.stream_player.play(station.link)
         self.mute()
         self.stream_player._set_property("force-seekable", True)
-        time.sleep(3)
+        time.sleep(5)
         self.reset_pos()
 
     def unmute(self):
@@ -99,7 +107,9 @@ class StreamPlayer:
         return self.stream_player.core_idle
 
     def is_playing(self):
-        return len(self.stream_player.playlist_filenames) == 1
+        #return len(self.stream_player.playlist_filenames) == 1
+        print(self.stream_player._get_property("idle-active"))
+        return self.stream_player._get_property("idle-active") != "true"
 
     def pause(self):
         self.stream_player._set_property("pause", True)
@@ -142,35 +152,31 @@ class StreamPlayer:
             return f'-{seconds:02}'
 
 
-def display_control(event, device_controller):
+def display_control(show_logo, show_lag, device_controller):
     display = LED_display()
-    lag = 0
-    lag_string = ""
 
     while True:
-        if event.is_set():
-            event.clear()
-            display.brightness_high()
-            display.print_bitmap(device_controller.current_stream.station.logo)
-            display.dim(event)
-        elif device_controller.current_stream.is_paused():
-            display.print(device_controller.current_stream.stream_lag_string())
-        elif device_controller.current_stream.stream_lag_seconds() > 3:
-            current_lag = device_controller.current_stream.stream_lag_seconds()
-            if abs(current_lag - lag) > 1:
-                current_lag_string = device_controller.current_stream.stream_lag_string()
-                display.print(current_lag_string)
-                lag = current_lag
-                lag_string = current_lag_string
+        try:
+            if show_logo.is_set():
+                show_logo.clear()
+                display.brightness_high()
+                display.print_bitmap(device_controller.current_stream.station.logo)
+                display.dim(show_logo)
+            elif device_controller.current_stream.is_paused():
+                display.print(device_controller.current_stream.stream_lag_string())
+            elif show_lag.is_set():
+                show_lag.clear()
+                display.print(device_controller.current_stream.stream_lag_string())
+                show_lag.wait(1.5)
+            elif device_controller.current_stream.is_muted():
+                display.blank()
             else:
-                display.print(lag_string)
-        elif device_controller.current_stream.is_muted():
-            display.blank()
-        else:
-            display.brightness_low()
-            display.screensaver()
+                display.brightness_low()
+                display.screensaver()
 
-        time.sleep(0.1)
+            time.sleep(0.1)
+        except Exception:
+            continue
 
 
 class LED_display:
@@ -221,8 +227,10 @@ class LED_display:
 
     def print(self, stream_lag_string):
         self.device.contrast(64)
+        # there's space for 5 chars on the 16x8 display
         if len(stream_lag_string) > 5:
             show_message(self.device, str(stream_lag_string), fill="white", font=proportional(TINY_FONT))
         else:
+            # scrolling text across display
             with canvas(self.device) as draw:
                 text(draw, (-1, 1), stream_lag_string, fill="white", font=proportional(TINY_FONT))
