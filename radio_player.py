@@ -44,8 +44,10 @@ class RadioController:
         self.display = threading.Thread(target=display_control, args=(self.show_logo, self.show_lag, self))
         self.display.start()
 
-    def execute(self, cmd):
+    def execute(self, cmd, opt=None):
         try:
+            if self.current_stream.stream_lag_seconds() > 1800:
+                raise Exception
             if cmd == Action.STOP:
                 self.current_stream.mute()
                 self.current_stream.reset_pos()
@@ -66,10 +68,10 @@ class RadioController:
                 self.show_logo.set()
             elif cmd == Action.SEEK_B:
                 self.show_lag.set()
-                self.current_stream.seek(-30)
+                self.current_stream.seek(-30 if opt is None else opt * -60)
             elif cmd == Action.SEEK_F:
                 self.show_lag.set()
-                self.current_stream.seek(30)
+                self.current_stream.seek(30 if opt is None else opt * 60)
             elif cmd == Action.SHOW:
                 self.current_stream.unmute()
                 self.show_logo.set()
