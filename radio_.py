@@ -9,11 +9,12 @@ def main():
     remote.grab()
     
     player = RadioController()
-    timee = time.time()
+    time_ = time.time()
+    seek_multiplier = (0, 0)
 
     while True:
         for event in remote.read_loop():
-            if event.timestamp() - timee > 0.3:
+            if event.timestamp() - time_ > 0.3:
                 if event.value == 0x45c:
                     player.execute(Action.NEXT)
 
@@ -29,14 +30,23 @@ def main():
                 if event.value == 0x458:
                     player.execute(Action.TOGGLE_PAUSE)
 
+                if 0x402 <= event.value <= 0x409:
+                    seek_multiplier = (event.value - 1024, event.timestamp())
+
                 if event.value == 0x45a:
-                    player.execute(Action.SEEK_B)
+                    if time.time() - seek_multiplier[1] < 2:
+                        player.execute(Action.SEEK_B, seek_multiplier[0])
+                    else:
+                        player.execute(Action.SEEK_B)
 
                 if event.value == 0x45b:
-                    player.execute(Action.SEEK_F)
+                    if time.time() - seek_multiplier[1] < 2:
+                        player.execute(Action.SEEK_F, seek_multiplier[0])
+                    else:
+                        player.execute(Action.SEEK_F)
 
                 if event.value == 0x459:
                     player.execute(Action.LIVE)
 
-            timee = time.time()
+            time_ = time.time()
 main()

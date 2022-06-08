@@ -34,19 +34,50 @@ class RadioStation:
         self.logo = logo
 
 
+class StreamsIterator:
+    def __init__(self):
+        self.stations = [StreamPlayer(RadioStation(radio_station[0], radio_station[1], radio_station[2])) for radio_station in radio_stations]
+        self.current_station_index = 0
+
+    def current_station(self):
+        return self.stations[self.current_station_index]
+
+    def next_station(self):
+        if self.current_station_index < len(self.stations) - 1:
+            self.current_station_index += 1
+        else:
+            self.current_station_index = 0
+
+        return  self.stations[self.current_station_index]
+
+
 class RadioController:
     def __init__(self):
-        self.streams_iterator = itertools.cycle(
-            [StreamPlayer(RadioStation(radio_station[0], radio_station[1], radio_station[2])) for radio_station in radio_stations])
-        self.current_stream = next(self.streams_iterator)
+        self.streams_iterator = StreamsIterator()
+
+        self.current_stream = self.streams_iterator.next_station()
         self.show_logo = threading.Event()
         self.show_lag = threading.Event()
-        self.display = threading.Thread(target=display_control, args=(self.show_logo, self.show_lag, self))
+        self.show_error = threading.Event()
+        self.display = threading.Thread(target=display_control, args=(self.show_logo, self.show_lag, self.show_error, self))
         self.display.start()
 
-    def execute(self, cmd):
+    def execute(self, cmd, opt=None):
         try:
-            if cmd == Action.STOP:
+            if cmd == Action.NEXT:
+                if self.current_stream is not None:
+                    self.current_stream.mute()
+                    self.current_stream.reset_pos()
+                    self.current_stream.unpause()
+                self.current_stream = self.streams_iterator.next_station()
+                self.current_stream.unmute()
+                self.show_logo.set()
+            elif self.current_stream is None:
+                i = self.streams_iterator.current_station_index
+                self.streams_iterator.stations[i] = StreamPlayer(RadioStation(radio_station[i][0], radio_station[i][1], radio_station[i][2]))
+            elif self.current_stream.stream_lag_seconds() > 1800:
+                raise Exception
+            elif cmd == Action.STOP:
                 self.current_stream.mute()
                 self.current_stream.reset_pos()
             elif cmd == Action.PLAY:
@@ -57,19 +88,12 @@ class RadioController:
                     self.current_stream.unpause()
                 else:
                     self.current_stream.pause()
-            elif cmd == Action.NEXT:
-                self.current_stream.mute()
-                self.current_stream.reset_pos()
-                self.current_stream.unpause()
-                self.current_stream = next(self.streams_iterator)
-                self.current_stream.unmute()
-                self.show_logo.set()
             elif cmd == Action.SEEK_B:
                 self.show_lag.set()
-                self.current_stream.seek(-30)
+                self.current_stream.seek(-30 if opt is None else opt * -60)
             elif cmd == Action.SEEK_F:
                 self.show_lag.set()
-                self.current_stream.seek(30)
+                self.current_stream.seek(30 if opt is None else opt * 60)
             elif cmd == Action.SHOW:
                 self.current_stream.unmute()
                 self.show_logo.set()
@@ -78,9 +102,8 @@ class RadioController:
                 self.current_stream.unpause()
         except Exception as e:
             print(e)
-            self.streams_iterator = itertools.cycle(
-            [StreamPlayer(RadioStation(radio_station[0], radio_station[1], radio_station[2])) for radio_station in radio_stations])
-            self.current_stream = next(self.streams_iterator)
+            self.streams_iterator.stations[self.streams_iterator.current_station_index] = None
+            self.show_error.set()
 
 
 class StreamPlayer:
@@ -150,7 +173,7 @@ class StreamPlayer:
             return f'-{seconds:02}'
 
 
-def display_control(show_logo, show_lag, device_controller):
+def display_control(show_logo, show_lag, show_error, device_controller):
     display = LED_display()
 
     while True:
@@ -160,6 +183,9 @@ def display_control(show_logo, show_lag, device_controller):
                 display.brightness_high()
                 display.print_bitmap(device_controller.current_stream.station.logo)
                 display.dim(show_logo)
+            elif show_error.is_set():
+                show_error.clear()
+                raise Exception
             elif device_controller.current_stream.is_paused():
                 display.print(device_controller.current_stream.stream_lag_string())
             elif show_lag.is_set():
@@ -174,7 +200,8 @@ def display_control(show_logo, show_lag, device_controller):
 
             time.sleep(0.1)
         except Exception:
-            continue
+            display.print_bitmap(display.ERROR)
+            time.sleep(3)
 
 
 class LED_display:
@@ -194,6 +221,15 @@ class LED_display:
                 [_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_],
                 [_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_],
                 [X,_,_,_,_,_,_,_,_,_,_,_,_,_,_,X]]
+
+    ERROR =    [[_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_],
+                [_,_,X,X,X,_,X,X,_,_,X,X,_,_,_,_],
+                [_,_,X,_,_,_,X,_,X,_,X,_,X,_,_,_],
+                [_,_,X,X,X,_,X,X,_,_,X,X,_,_,_,_],
+                [_,_,X,_,_,_,X,_,X,_,X,_,X,_,_,_],
+                [_,_,X,X,X,_,X,_,X,_,X,_,X,_,_,_],
+                [_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_],
+                [_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_]]
 
     def screensaver(self):
         self.print_bitmap(self.PLAYING)
@@ -225,10 +261,9 @@ class LED_display:
 
     def print(self, stream_lag_string):
         self.device.contrast(64)
-        # there's space for 5 chars on the 16x8 display
+        # there's space only for 5 chars on the 16x8 display
         if len(stream_lag_string) > 5:
             show_message(self.device, str(stream_lag_string), fill="white", font=proportional(TINY_FONT))
         else:
-            # scrolling text across display
             with canvas(self.device) as draw:
                 text(draw, (-1, 1), stream_lag_string, fill="white", font=proportional(TINY_FONT))
