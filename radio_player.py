@@ -14,7 +14,7 @@ from luma.core.legacy import text, show_message
 from luma.core.legacy.font import proportional
 
 from radio_stations_config import radio_stations
-
+from anim import R, S, T
 
 class Action(Enum):
     STOP = 1
@@ -25,7 +25,7 @@ class Action(Enum):
     SEEK_F = 6
     SHOW = 7
     LIVE = 8
-
+    RESET = 9
 
 class RadioStation:
     def __init__(self, name, link, logo=None):
@@ -50,6 +50,14 @@ class StreamsIterator:
 
         return  self.stations[self.current_station_index]
 
+    def reset_current_station(self):
+        i = self.current_station_index
+
+        try:
+            del self.stations[i]
+            self.stations.insert(i, StreamPlayer(RadioStation(radio_stations[i][0], radio_stations[i][1], radio_stations[i][2])))
+        except:
+            pass
 
 class RadioController:
     def __init__(self):
@@ -64,19 +72,19 @@ class RadioController:
 
     def execute(self, cmd, opt=None):
         try:
+            if cmd == Action.RESET:
+                raise Exception
             if cmd == Action.NEXT:
                 if self.current_stream is not None:
                     self.current_stream.mute()
                     self.current_stream.reset_pos()
                     self.current_stream.unpause()
                 self.current_stream = self.streams_iterator.next_station()
-                self.current_stream.unmute()
-                self.show_logo.set()
-            elif self.current_stream is None:
-                i = self.streams_iterator.current_station_index
-                self.streams_iterator.stations[i] = StreamPlayer(RadioStation(radio_station[i][0], radio_station[i][1], radio_station[i][2]))
-            elif self.current_stream.stream_lag_seconds() > 1800:
-                raise Exception
+                try:
+                    self.current_stream.unmute()
+                    self.show_logo.set()
+                except:
+                    self.show_error.set()
             elif cmd == Action.STOP:
                 self.current_stream.mute()
                 self.current_stream.reset_pos()
@@ -100,11 +108,16 @@ class RadioController:
             elif cmd == Action.LIVE:
                 self.current_stream.reset_pos()
                 self.current_stream.unpause()
+
         except Exception as e:
             print(e)
-            self.streams_iterator.stations[self.streams_iterator.current_station_index] = None
             self.show_error.set()
-
+            try:
+                self.current_stream.mute()
+            except:
+                pass
+            self.streams_iterator.reset_current_station()
+            self.current_stream = self.streams_iterator.current_station()
 
 class StreamPlayer:
     def __init__(self, station):
@@ -181,7 +194,8 @@ def display_control(show_logo, show_lag, show_error, device_controller):
             if show_logo.is_set():
                 show_logo.clear()
                 display.brightness_high()
-                display.print_bitmap(device_controller.current_stream.station.logo)
+                display.anim_bitmap(device_controller.current_stream.station.logo, R)
+                #display.print_bitmap(device_controller.current_stream.station.logo)
                 display.dim(show_logo)
             elif show_error.is_set():
                 show_error.clear()
@@ -245,6 +259,15 @@ class LED_display:
                 time.sleep(0.08)
             else:
                 break
+
+    def anim_bitmap(self, logo, anim):
+        for i in anim:
+            with canvas(self.device) as draw:
+                for x in range(16):
+                    for y in range(8):
+                        if (logo[y][x] == 1 and i[y][x] == 1) or i[y][x] == 2:
+                            draw.point((x, y), fill="white")
+            time.sleep(0.02)
 
     def print_bitmap(self, logo):
         with canvas(self.device) as draw:

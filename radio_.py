@@ -48,5 +48,7 @@ def main():
                 if event.value == 0x459:
                     player.execute(Action.LIVE)
 
+                if event.value == 0x454:
+                    player.execute(Action.RESET)
             time_ = time.time()
 main()
